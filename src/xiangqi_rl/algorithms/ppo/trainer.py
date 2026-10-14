@@ -69,7 +69,29 @@ class EpisodeStats:
 class PPOTrainer:
     """Train a :class:`PolicyValueNet` with PPO against baseline opponents."""
 
-    def __init__(self, config: PPOConfig, model: PolicyValueNet | None = None) -> None:
+    def __init__(
+        self,
+        config: PPOConfig,
+        model: PolicyValueNet | None = None,
+        *,
+        resuming: bool = False,
+    ) -> None:
+        """Create a trainer.
+
+        A *new* run refuses an ``output_dir`` that already holds a run (logs or
+        checkpoints): continuing would append to the old CSV logs and overwrite
+        its ``latest.pt``/``best.pt``. Resume with :meth:`from_checkpoint`
+        (which passes ``resuming=True``) or pick a new directory.
+        """
+        existing = [
+            name for name in ("train_log.csv", "eval_log.csv", "latest.pt", "best.pt")
+            if (Path(config.output_dir) / name).exists()
+        ]
+        if existing and not resuming:
+            raise FileExistsError(
+                f"{config.output_dir} already contains a run ({', '.join(existing)}). "
+                "Resume it (--resume <dir>/latest.pt) or use a new output_dir."
+            )
         self.config = config
         self.device = resolve_device(config.device)
         seed_everything(config.seed, config.deterministic)
@@ -431,7 +453,7 @@ class PPOTrainer:
         if cfg.model.to_dict() != payload["config"]:
             raise ValueError("config.model does not match the checkpoint's model config")
 
-        trainer = cls(cfg)
+        trainer = cls(cfg, resuming=True)
         trainer.model.load_state_dict(payload["model_state_dict"])
         trainer.optimizer.load_state_dict(payload["optimizer_state_dict"])
         if trainer.scheduler is not None and state.get("scheduler_state_dict") is not None:

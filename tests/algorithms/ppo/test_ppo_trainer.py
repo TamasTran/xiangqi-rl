@@ -253,6 +253,20 @@ def test_resumed_run_completes_more_updates(tmp_path) -> None:
     assert text.count("iteration,") == 1 and len(text.strip().splitlines()) == 1 + 3
 
 
+def test_new_run_refuses_existing_output_dir(tmp_path) -> None:
+    cfg = small_config(tmp_path, total_iterations=1)
+    PPOTrainer(cfg).train()
+    out = Path(cfg.output_dir)
+    log_before = (out / "train_log.csv").read_text()
+    ckpt_before = (out / "latest.pt").read_bytes()
+    with pytest.raises(FileExistsError, match="already contains a run"):
+        PPOTrainer(cfg)
+    assert (out / "train_log.csv").read_text() == log_before      # nothing appended
+    assert (out / "latest.pt").read_bytes() == ckpt_before        # nothing overwritten
+    resumed = PPOTrainer.from_checkpoint(out / "latest.pt")       # resuming is allowed
+    assert resumed.iteration == 1
+
+
 def test_evaluation_only_loading_and_incompatible_resume(tmp_path) -> None:
     t = PPOTrainer(small_config(tmp_path))
     t.train()
