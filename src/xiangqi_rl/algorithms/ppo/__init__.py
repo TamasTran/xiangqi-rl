@@ -16,6 +16,7 @@ from xiangqi_rl.algorithms.ppo.returns import (
     normalize_advantages,
 )
 from xiangqi_rl.algorithms.ppo.seeding import resolve_device, seed_everything
+from xiangqi_rl.algorithms.ppo.shaping import material_balance
 from xiangqi_rl.algorithms.ppo.trainer import NonFiniteError, PPOTrainer
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "evaluate_actions",
     "explained_variance",
     "load_config",
+    "material_balance",
     "normalize_advantages",
     "parse_override",
     "ppo_policy_loss",

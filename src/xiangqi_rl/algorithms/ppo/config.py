@@ -70,6 +70,10 @@ class PPOConfig:
     """Engine draw rule (a natural, terminal result)."""
     max_episode_plies: int | None = None
     """External step limit in plies (truncation, bootstrapped)."""
+    material_shaping_coef: float = 0.0
+    """Potential-based material shaping ``gamma*Phi(s') - Phi(s)`` with
+    ``Phi = coef * material_balance`` (0 disables). Requires
+    ``model.value_activation='none'`` because shaped values can exceed [-1, 1]."""
 
     # --- evaluation / logging / checkpoints
     eval_interval: int = 10
@@ -97,6 +101,10 @@ class PPOConfig:
         check(self.model.norm != "batch",
               "norm='batch' is not supported by PPO (rollout and update would use "
               "different statistics); use 'group' or 'none'")
+        check(self.material_shaping_coef >= 0, "material_shaping_coef must be >= 0")
+        check(self.material_shaping_coef == 0 or self.model.value_activation == "none",
+              "material_shaping_coef > 0 needs model.value_activation='none': shaped "
+              "returns range over [-1 - coef, 1 + coef], outside tanh's [-1, 1]")
         check(self.total_iterations >= 0, "total_iterations must be >= 0")
         check(self.learning_rate > 0, "learning_rate must be positive")
         check(0.0 < self.gamma <= 1.0, "gamma must be in (0, 1]")

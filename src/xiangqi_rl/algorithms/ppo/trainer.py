@@ -37,7 +37,8 @@ from xiangqi_rl.nn import PolicyValueNet, create_model, load_checkpoint, save_ch
 TRAIN_COLUMNS = [
     "iteration", "decisions", "episodes", "policy_loss", "value_loss", "entropy",
     "approx_kl", "clip_fraction", "mean_advantage", "mean_return", "explained_variance",
-    "grad_norm", "learning_rate", "epochs_run", "episode_reward", "episode_length",
+    "grad_norm", "learning_rate", "epochs_run", "episode_reward", "episode_shaped_return",
+    "episode_length",
     "wins", "draws", "losses", "truncated", "episodes_in_rollout",
     "env_seconds", "inference_seconds", "update_seconds", "wall_seconds",
 ]
@@ -59,6 +60,9 @@ class EpisodeStats:
     """One finished training episode (from the trained agent's perspective)."""
 
     reward: float
+    """Game result reward (+1/0/-1; 0 when truncated), without shaping."""
+    shaped_return: float
+    """Undiscounted sum of the rewards used for training (game + shaping)."""
     decisions: int
     plies: int
     outcome: str  # "win" | "draw" | "loss" | "truncated"
@@ -120,6 +124,8 @@ class PPOTrainer:
             max_episode_plies=config.max_episode_plies,
             color_schedule=config.color_schedule,
             seed=config.seed,
+            material_shaping_coef=config.material_shaping_coef,
+            shaping_gamma=config.gamma,
         )
         self.buffer = RolloutBuffer(config.rollout_steps, self.env.observation_shape,
                                     self.env.action_dim)
@@ -133,7 +139,9 @@ class PPOTrainer:
 
         self._obs: np.ndarray | None = None
         self._mask: np.ndarray | None = None
-        self._episode_reward_decisions = 0
+        # Per-episode counters carried across rollout boundaries.
+        self._episode_decisions = 0
+        self._episode_shaped_return = 0.0
 
         out = Path(config.output_dir)
         self.output_dir = out
@@ -164,7 +172,8 @@ class PPOTrainer:
         self.model.eval()
         episodes: list[EpisodeStats] = []
         env_time = inf_time = 0.0
-        decisions_in_episode = getattr(self, "_episode_decisions", 0)
+        decisions_in_episode = self._episode_decisions
+        shaped_return = self._episode_shaped_return
 
         if self._obs is None:
             t0 = time.perf_counter()
@@ -172,6 +181,7 @@ class PPOTrainer:
             self._mask = info["action_mask"]
             env_time += time.perf_counter() - t0
             decisions_in_episode = 0
+            shaped_return = 0.0
 
         for _ in range(cfg.rollout_steps):
             t0 = time.perf_counter()
@@ -182,6 +192,7 @@ class PPOTrainer:
             next_obs, reward, terminated, truncated, info = self.env.step(action)
             env_time += time.perf_counter() - t0
             decisions_in_episode += 1
+            shaped_return += reward
 
             truncation_value = 0.0
             if truncated:
@@ -197,18 +208,23 @@ class PPOTrainer:
                             terminated, truncated, truncation_value)
 
             if terminated or truncated:
+                # Outcome from the *game* reward, never from the (shaped) training reward.
+                game_reward = info["game_reward"]
                 outcome = "truncated" if truncated else (
-                    "win" if reward > 0 else "loss" if reward < 0 else "draw")
-                episodes.append(EpisodeStats(reward, decisions_in_episode, info["ply"], outcome,
-                                             info["agent_side"], info["opponent"]))
+                    "win" if game_reward > 0 else "loss" if game_reward < 0 else "draw")
+                episodes.append(EpisodeStats(game_reward, shaped_return, decisions_in_episode,
+                                             info["ply"], outcome, info["agent_side"],
+                                             info["opponent"]))
                 t0 = time.perf_counter()
                 self._obs, new_info = self.env.reset()
                 env_time += time.perf_counter() - t0
                 self._mask = new_info["action_mask"]
                 decisions_in_episode = 0
+                shaped_return = 0.0
             else:
                 self._obs, self._mask = next_obs, info["action_mask"]
         self._episode_decisions = decisions_in_episode
+        self._episode_shaped_return = shaped_return
 
         # The current observation is a live decision point of the agent.
         t0 = time.perf_counter()
@@ -383,6 +399,8 @@ class PPOTrainer:
         return {
             "episodes_in_rollout": float(n),
             "episode_reward": float(np.mean([e.reward for e in episodes])) if n else float("nan"),
+            "episode_shaped_return": (
+                float(np.mean([e.shaped_return for e in episodes])) if n else float("nan")),
             "episode_length": float(np.mean([e.decisions for e in episodes])) if n else float("nan"),
             "wins": count("win"), "draws": count("draw"),
             "losses": count("loss"), "truncated": count("truncated"),
@@ -392,7 +410,7 @@ class PPOTrainer:
     def _format(m: dict[str, float]) -> str:
         return (
             f"iter {int(m['iteration']):4d} | decisions {int(m['decisions']):7d} | "
-            f"R {m['episode_reward']:+.2f} len {m['episode_length']:.0f} "
+            f"R {m['episode_reward']:+.2f} (shaped {m['episode_shaped_return']:+.2f}) len {m['episode_length']:.0f} "
             f"W{int(m['wins'])}/D{int(m['draws'])}/L{int(m['losses'])} | "
             f"pi {m['policy_loss']:+.4f} v {m['value_loss']:.4f} H {m['entropy']:.3f} "
             f"kl {m['approx_kl']:.4f} clip {m['clip_fraction']:.2f} ev {m['explained_variance']:.2f} | "

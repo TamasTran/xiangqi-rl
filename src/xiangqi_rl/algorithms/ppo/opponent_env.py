@@ -12,7 +12,10 @@ training only*:
   agent (side to move == ``agent_side``), so rewards and value estimates share
   one perspective and ordinary GAE applies;
 * reward is the game result from ``agent_side``'s point of view, given only
-  when the game ends naturally; an external truncation yields reward 0.
+  when the game ends naturally; an external truncation yields reward 0;
+* optionally, a potential-based material shaping term is added (see
+  :mod:`shaping`); ``info["game_reward"]`` always holds the unshaped result
+  reward and ``info["shaping_reward"]`` the shaping term.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from xiangqi_rl.agents.base import Agent
+from xiangqi_rl.algorithms.ppo.shaping import material_balance
 from xiangqi_rl.engine import GameConfig, Side
 from xiangqi_rl.env import EpisodeOverError, XiangqiEnv, result_for_side
 
@@ -41,6 +45,10 @@ class OpponentEnv:
             ``black`` or ``random``.
         seed: Seed of the wrapper's own RNG (opponent / colour draws).
         initial_fen: Optional custom start position (mainly for tests).
+        material_shaping_coef: Scale of the material potential (0 disables).
+        shaping_gamma: Discount used in ``gamma * Phi(s') - Phi(s)``; must equal
+            the PPO ``gamma`` (per agent decision) for the shaping to be
+            potential-based.
     """
 
     def __init__(
@@ -52,9 +60,15 @@ class OpponentEnv:
         color_schedule: str = "alternate",
         seed: int = 0,
         initial_fen: str | None = None,
+        material_shaping_coef: float = 0.0,
+        shaping_gamma: float = 1.0,
     ) -> None:
         if not opponents:
             raise ValueError("at least one opponent is required")
+        if material_shaping_coef < 0:
+            raise ValueError(f"material_shaping_coef must be >= 0, got {material_shaping_coef}")
+        if not 0.0 < shaping_gamma <= 1.0:
+            raise ValueError(f"shaping_gamma must be in (0, 1], got {shaping_gamma}")
         if color_schedule not in _SCHEDULES:
             raise ValueError(f"color_schedule must be one of {_SCHEDULES}, got {color_schedule!r}")
         self._env = XiangqiEnv(game_config=game_config, max_episode_steps=max_episode_plies,
@@ -67,6 +81,9 @@ class OpponentEnv:
         self.opponent: Agent = self._opponents[0]
         self._over = True
         self._opponent_moves = 0
+        self._shaping_coef = material_shaping_coef
+        self._shaping_gamma = shaping_gamma
+        self._potential = 0.0
 
     # ------------------------------------------------------------------ RNG state
 
@@ -106,6 +123,7 @@ class OpponentEnv:
         self._over = terminated or truncated
         if self._over:
             raise RuntimeError("episode ended before the trained agent could move")
+        self._potential = self._phi()
         return obs, self._info(terminated=False, truncated=False)
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
@@ -126,13 +144,26 @@ class OpponentEnv:
         while not (terminated or truncated) and self._env.side_to_move is not self.agent_side:
             obs, terminated, truncated = self._opponent_move()
         self._over = terminated or truncated
-        reward = result_for_side(self._env.state.result, self.agent_side) if terminated else 0.0
-        return obs, reward, terminated, truncated, self._info(terminated, truncated)
+        game_reward = result_for_side(self._env.state.result, self.agent_side) if terminated else 0.0
+        shaping = 0.0
+        if self._shaping_coef > 0:
+            next_potential = 0.0 if terminated else self._phi()  # Phi(terminal) = 0
+            shaping = self._shaping_gamma * next_potential - self._potential
+            self._potential = next_potential
+        info = self._info(terminated, truncated)
+        info["game_reward"] = game_reward
+        info["shaping_reward"] = shaping
+        return obs, game_reward + shaping, terminated, truncated, info
 
     def close(self) -> None:
         self._env.close()
 
     # ------------------------------------------------------------------ internals
+
+    def _phi(self) -> float:
+        if self._shaping_coef == 0:
+            return 0.0
+        return self._shaping_coef * material_balance(self._env.state.board, self.agent_side)
 
     def _pick_side(self) -> Side:
         if self._schedule == "red":
