@@ -13,3 +13,4 @@ htmlcov/
 artifacts/
 dist/
 *.pt
+ppo_run*.zip

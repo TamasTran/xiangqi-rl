@@ -37,7 +37,7 @@ rollout_steps: 2048      # trained-agent decisions per rollout
 minibatch_size: 256
 update_epochs: 4
 
-opponents: [random, heuristic]   # one drawn uniformly per episode
+opponents: [random, heuristic, lookahead]   # one drawn uniformly per episode
 color_schedule: alternate        # alternate | red | black | random
 game_max_plies: 200              # engine draw rule (natural terminal result)
 max_episode_plies: null          # external limit -> truncation (bootstrapped)
@@ -46,7 +46,7 @@ material_shaping_coef: 0.5       # potential-based material shaping (0 = sparse 
 eval_interval: 10        # iterations; 0 disables evaluation
 eval_games: 20           # per opponent, even (both colours equally)
 eval_seed: 12345
-eval_opponents: [random, heuristic]
+eval_opponents: [random, heuristic, lookahead]
 eval_greedy: true        # greedy legal move instead of sampling
 checkpoint_interval: 10
 log_interval: 1

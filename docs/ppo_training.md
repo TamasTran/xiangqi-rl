@@ -79,8 +79,8 @@ The base environment alternates players every ply, so consecutive rewards
 and values have alternating perspectives and plain GAE would be wrong.
 `OpponentEnv` solves this for training without changing `XiangqiEnv`:
 
-* The trained agent plays one side; one baseline (random or heuristic,
-  drawn per episode) plays the other.
+* The trained agent plays one side; one baseline (random, heuristic or
+  lookahead, drawn per episode from `opponents`) plays the other.
 * `step(action)` plays the agent's move, then the opponent's replies, until
   it is the agent's turn again or the game ends. Every stored transition is
   therefore *agent decision -> next agent decision*, with a single, fixed
@@ -176,6 +176,17 @@ per-colour breakdown. Evaluation runs before training (iteration 0) and every
 mean score (win = 1, draw = 0.5) over the evaluation opponents. With the
 default 20 games per opponent the numbers are noisy; use `evaluate_ppo.py`
 with many more games (hundreds) before drawing conclusions.
+
+### Why the lookahead opponent exists
+
+A 1000-iteration run (shaping 0.5) reached ~90% wins against the one-ply
+heuristic, but games were only ~17 plies long, Black won 20/20 and half of the
+games repeated one opening trap: the policy exploited the heuristic's
+blindness to recaptures and mate threats. Re-evaluated against the two-ply
+`lookahead` baseline, the same checkpoints won only 2-4 of 40 games. The
+baseline config therefore trains and evaluates against all three opponents.
+`lookahead` makes each opponent move ~6x slower than `heuristic`, so
+iterations take longer.
 
 ## 9. Metrics and files
 

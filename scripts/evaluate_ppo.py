@@ -31,8 +31,8 @@ def main() -> None:
     p.add_argument("--games", type=int, default=100, help="games per opponent (even)")
     p.add_argument("--seed", type=int, default=12345)
     p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
-    p.add_argument("--opponents", nargs="+", default=["random", "heuristic"],
-                   choices=["random", "heuristic"])
+    p.add_argument("--opponents", nargs="+", default=["random", "heuristic", "lookahead"],
+                   choices=["random", "heuristic", "lookahead"])
     p.add_argument("--sample", action="store_true", help="sample moves instead of greedy")
     p.add_argument("--max-plies", type=int, default=200, help="engine draw limit")
     args = p.parse_args()
