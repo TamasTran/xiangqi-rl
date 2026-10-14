@@ -1,0 +1,165 @@
+"""Fixed-perspective training wrapper around :class:`XiangqiEnv`.
+
+The base environment is untouched (one ply per ``step``, both sides supplied
+by the caller). This wrapper turns it into a single-agent problem *for
+training only*:
+
+* the trained agent plays one side (``agent_side``), a baseline opponent the
+  other;
+* ``step(action)`` plays the agent's move, then lets the opponent move until
+  it is the agent's turn again (or the game ends);
+* every returned observation is therefore a decision point of the trained
+  agent (side to move == ``agent_side``), so rewards and value estimates share
+  one perspective and ordinary GAE applies;
+* reward is the game result from ``agent_side``'s point of view, given only
+  when the game ends naturally; an external truncation yields reward 0.
+"""
+
+from __future__ import annotations
+
+import random
+from collections.abc import Sequence
+from typing import Any
+
+import numpy as np
+
+from xiangqi_rl.agents.base import Agent
+from xiangqi_rl.engine import GameConfig, Side
+from xiangqi_rl.env import EpisodeOverError, XiangqiEnv, result_for_side
+
+_SCHEDULES = ("alternate", "red", "black", "random")
+
+
+class OpponentEnv:
+    """Single-agent view of Xiangqi against sampled baseline opponents.
+
+    Args:
+        opponents: Candidate opponents; one is drawn per episode.
+        game_config: Engine rules (draw by ply limit, repetition).
+        max_episode_plies: External limit in plies (causes ``truncated``).
+        color_schedule: ``alternate`` (RED on even episodes), ``red``,
+            ``black`` or ``random``.
+        seed: Seed of the wrapper's own RNG (opponent / colour draws).
+        initial_fen: Optional custom start position (mainly for tests).
+    """
+
+    def __init__(
+        self,
+        opponents: Sequence[Agent],
+        *,
+        game_config: GameConfig | None = None,
+        max_episode_plies: int | None = None,
+        color_schedule: str = "alternate",
+        seed: int = 0,
+        initial_fen: str | None = None,
+    ) -> None:
+        if not opponents:
+            raise ValueError("at least one opponent is required")
+        if color_schedule not in _SCHEDULES:
+            raise ValueError(f"color_schedule must be one of {_SCHEDULES}, got {color_schedule!r}")
+        self._env = XiangqiEnv(game_config=game_config, max_episode_steps=max_episode_plies,
+                               initial_fen=initial_fen)
+        self._opponents = list(opponents)
+        self._schedule = color_schedule
+        self._rng = random.Random(seed)
+        self.episodes_started = 0
+        self.agent_side: Side = Side.RED
+        self.opponent: Agent = self._opponents[0]
+        self._over = True
+        self._opponent_moves = 0
+
+    # ------------------------------------------------------------------ RNG state
+
+    @property
+    def rng_state(self) -> tuple:
+        """State of the wrapper's RNG (for exact checkpoint/resume)."""
+        return self._rng.getstate()
+
+    @rng_state.setter
+    def rng_state(self, state: tuple) -> None:
+        self._rng.setstate(state)
+
+    # ------------------------------------------------------------------ API
+
+    @property
+    def observation_shape(self) -> tuple[int, ...]:
+        return tuple(self._env.observation_space.shape)
+
+    @property
+    def action_dim(self) -> int:
+        return int(self._env.action_space.n)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        """Start an episode; if the agent plays BLACK the opponent opens."""
+        self.agent_side = self._pick_side()
+        self.opponent = (
+            self._opponents[0]
+            if len(self._opponents) == 1
+            else self._opponents[self._rng.randrange(len(self._opponents))]
+        )
+        self.episodes_started += 1
+        self._opponent_moves = 0
+        obs, _ = self._env.reset(seed=seed)
+        terminated = truncated = False
+        while not (terminated or truncated) and self._env.side_to_move is not self.agent_side:
+            obs, terminated, truncated = self._opponent_move()
+        self._over = terminated or truncated
+        if self._over:
+            raise RuntimeError("episode ended before the trained agent could move")
+        return obs, self._info(terminated=False, truncated=False)
+
+    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Play ``action`` for the agent, then the opponent's replies.
+
+        Returns ``(obs, reward, terminated, truncated, info)`` where ``obs`` is
+        the next decision point (or the final observation if the episode
+        ended) and ``info["action_mask"]`` its legal-action mask (all False
+        when the episode ended).
+
+        Raises:
+            IllegalActionError: for an illegal ``action`` (state unchanged).
+            EpisodeOverError: if the episode already ended.
+        """
+        if self._over:
+            raise EpisodeOverError("episode ended; call reset()")
+        obs, _, terminated, truncated, _ = self._env.step(action)
+        while not (terminated or truncated) and self._env.side_to_move is not self.agent_side:
+            obs, terminated, truncated = self._opponent_move()
+        self._over = terminated or truncated
+        reward = result_for_side(self._env.state.result, self.agent_side) if terminated else 0.0
+        return obs, reward, terminated, truncated, self._info(terminated, truncated)
+
+    def close(self) -> None:
+        self._env.close()
+
+    # ------------------------------------------------------------------ internals
+
+    def _pick_side(self) -> Side:
+        if self._schedule == "red":
+            return Side.RED
+        if self._schedule == "black":
+            return Side.BLACK
+        if self._schedule == "random":
+            return Side.RED if self._rng.random() < 0.5 else Side.BLACK
+        return Side.RED if self.episodes_started % 2 == 0 else Side.BLACK
+
+    def _opponent_move(self) -> tuple[np.ndarray, bool, bool]:
+        action = self.opponent.select_action(self._env.game_copy())
+        obs, _, terminated, truncated, _ = self._env.step(action)
+        self._opponent_moves += 1
+        return obs, terminated, truncated
+
+    def _info(self, terminated: bool, truncated: bool) -> dict[str, Any]:
+        state = self._env.state
+        return {
+            "action_mask": self._env.action_masks(),
+            "agent_side": int(self.agent_side),
+            "side_to_move": int(state.side_to_move),
+            "opponent": self.opponent.name,
+            "opponent_moves": self._opponent_moves,
+            "ply": state.ply,
+            "result": state.result.value,
+            "termination_reason": None if state.termination is None else state.termination.value,
+            "terminated": terminated,
+            "truncated": truncated,
+        }
