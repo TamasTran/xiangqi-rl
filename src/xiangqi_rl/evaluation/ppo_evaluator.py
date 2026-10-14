@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
-from xiangqi_rl.agents import HeuristicAgent, RandomAgent
+from xiangqi_rl.agents import HeuristicAgent, LookaheadAgent, RandomAgent
 from xiangqi_rl.engine import Game, GameConfig, Side
 from xiangqi_rl.env import encode_observation, legal_action_mask
 from xiangqi_rl.evaluation.match_runner import run_match
@@ -91,6 +91,8 @@ def make_baseline(name: str, seed: int):
         return RandomAgent(seed=seed, name="random")
     if name == "heuristic":
         return HeuristicAgent(seed=seed, name="heuristic")
+    if name == "lookahead":
+        return LookaheadAgent(seed=seed, name="lookahead")
     raise ValueError(f"unknown opponent {name!r}")
 
 

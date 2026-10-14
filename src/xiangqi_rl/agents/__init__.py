@@ -6,6 +6,7 @@ from xiangqi_rl.agents.heuristic_agent import (
     HeuristicAgent,
     HeuristicConfig,
 )
+from xiangqi_rl.agents.lookahead_agent import LookaheadAgent
 from xiangqi_rl.agents.random_agent import RandomAgent
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "Agent",
     "HeuristicAgent",
     "HeuristicConfig",
+    "LookaheadAgent",
     "NoLegalActionError",
     "RandomAgent",
 ]

@@ -15,7 +15,7 @@ try:
 except ImportError:  # allow running from a checkout without installing
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from xiangqi_rl.agents import HeuristicAgent, RandomAgent  # noqa: E402
+from xiangqi_rl.agents import HeuristicAgent, LookaheadAgent, RandomAgent  # noqa: E402
 from xiangqi_rl.engine import GameConfig, Side  # noqa: E402
 from xiangqi_rl.evaluation import MatchStats, run_match  # noqa: E402
 
@@ -68,6 +68,16 @@ def main() -> None:
         HeuristicAgent(seed=args.seed), RandomAgent(args.seed + 2), args.games, **kwargs
     )
     report("heuristic vs random (colours alternate unless --no-swap)", stats)
+
+    stats, _ = run_match(
+        LookaheadAgent(seed=args.seed), RandomAgent(args.seed + 3), args.games, **kwargs
+    )
+    report("lookahead vs random", stats)
+
+    stats, _ = run_match(
+        LookaheadAgent(seed=args.seed), HeuristicAgent(seed=args.seed + 4), args.games, **kwargs
+    )
+    report("lookahead vs heuristic", stats)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from typing import Any
 
 from xiangqi_rl.nn import ModelConfig
 
-OPPONENT_NAMES = ("random", "heuristic")
+OPPONENT_NAMES = ("random", "heuristic", "lookahead")
 COLOR_SCHEDULES = ("alternate", "red", "black", "random")
 OPTIMIZERS = ("adam", "adamw", "sgd")
 LR_SCHEDULES = ("none", "linear")

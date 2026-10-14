@@ -47,8 +47,9 @@ The exact rules, coordinate convention, and policies are documented in
 * `XiangqiEnv`: one ply per `step`, `terminated` vs `truncated`, legal-action
   mask, `(17, 10, 9)` float32 observation, `Discrete(8100)` actions,
   rewards from the mover's perspective (or a fixed side).
-* `RandomAgent` and a one-ply material `HeuristicAgent` (a yardstick, **not**
-  a strong engine), plus `run_match` and a tournament script.
+* `RandomAgent`, a one-ply material `HeuristicAgent` and a two-ply
+  `LookaheadAgent` (yardsticks, **not** strong engines), plus `run_match`
+  and a tournament script.
 
 **Phase 3 (implemented)**
 
