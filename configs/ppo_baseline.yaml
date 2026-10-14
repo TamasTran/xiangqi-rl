@@ -1,0 +1,51 @@
+# PPO against the Random and Heuristic baselines (Phase 4).
+# Every key below is read by xiangqi_rl.algorithms.ppo.PPOConfig. Values are
+# reasonable starting points, not tuned optima. Override from the CLI with
+#   --set key=value   (e.g. --set model.hidden_channels=96 --set total_iterations=50)
+seed: 0
+device: auto             # auto | cpu | cuda
+deterministic: false     # true: torch deterministic algorithms (slower)
+output_dir: artifacts/ppo
+total_iterations: 200    # rollout + update cycles
+
+model:                   # xiangqi_rl.nn.ModelConfig (observation/action sizes come from the env)
+  hidden_channels: 64
+  num_res_blocks: 4
+  norm: group            # PPO requires group or none
+  norm_groups: 8
+  policy_channels: 8
+  value_channels: 8
+  value_hidden: 64
+  value_activation: tanh
+
+optimizer: adam          # adam | adamw | sgd
+learning_rate: 0.0003
+adam_eps: 0.00001
+weight_decay: 0.0
+lr_schedule: linear      # none | linear (to 0 over total_iterations)
+
+gamma: 0.99              # per decision of the trained agent
+gae_lambda: 0.95
+clip_coef: 0.2
+value_clip_coef: null    # null: no value clipping
+vf_coef: 0.5
+ent_coef: 0.01
+max_grad_norm: 0.5
+normalize_advantages: true
+target_kl: null          # e.g. 0.05 to stop epochs early
+rollout_steps: 2048      # trained-agent decisions per rollout
+minibatch_size: 256
+update_epochs: 4
+
+opponents: [random, heuristic]   # one drawn uniformly per episode
+color_schedule: alternate        # alternate | red | black | random
+game_max_plies: 200              # engine draw rule (natural terminal result)
+max_episode_plies: null          # external limit -> truncation (bootstrapped)
+
+eval_interval: 10        # iterations; 0 disables evaluation
+eval_games: 20           # per opponent, even (both colours equally)
+eval_seed: 12345
+eval_opponents: [random, heuristic]
+eval_greedy: true        # greedy legal move instead of sampling
+checkpoint_interval: 10
+log_interval: 1

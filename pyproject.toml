@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiangqi-rl"
+version = "0.1.0"
+description = "Xiangqi (Chinese chess) engine, Gymnasium environment and baseline agents for reinforcement learning."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "gymnasium>=0.29"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+nn = ["torch>=2.1", "pyyaml>=6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-m 'not slow'"
+markers = ["slow: long-running checks such as perft depth 4 (run with: pytest -m slow)"]
