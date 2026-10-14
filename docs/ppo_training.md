@@ -89,9 +89,46 @@ and values have alternating perspectives and plain GAE would be wrong.
 * Reward: `+1` win, `-1` loss, `0` draw, `0` everywhere else, given at the
   end of the game, from the agent's side. If the *opponent's* move ends the
   game, the episode ends on that step with the corresponding reward.
+* Optional **material shaping** (`material_shaping_coef`, see section 5a) adds
+  a dense term to that reward. `info["game_reward"]` always keeps the unshaped
+  result, and wins/draws/losses in the logs are computed from it.
 * Colours: `color_schedule: alternate` plays RED in even episodes and BLACK
   in odd ones (also `red`, `black`, `random`). When the agent is BLACK the
   opponent makes the first move during `reset()`.
+
+## 5a. Potential-based material shaping
+
+With only the final result as reward, games against the random baseline
+almost always end in a draw by the ply limit (reward 0) and games against the
+heuristic in a loss many moves after the mistake, so there is little learning
+signal. A 400-iteration run with the sparse reward kept the mean episode
+reward flat at about -0.5 (lose to heuristic, draw with random).
+
+`material_shaping_coef > 0` adds, for every agent transition `s -> s'`
+(decision to next decision, so including the opponent's reply):
+
+    F = gamma * Phi(s') - Phi(s)
+    Phi(s) = coef * (material(agent) - material(opponent)) / 48,   Phi(terminal) = 0
+
+with chariot 9, cannon 4.5, horse 4, advisor 2, elephant 2, soldier 1 (48 =
+one side's starting material without the general). Winning material gives an
+immediate positive reward, losing it a negative one.
+
+Why potential-based: the discounted shaped return of an episode equals the
+original one minus `Phi(s_0)` (Ng, Harada & Russell, 1999), so the optimal
+policy is unchanged; the shaping cannot make "grab material and never
+checkmate" better than winning. The tests check this telescoping identity
+for terminated episodes with gamma 1 and 0.9 and both colours. `gamma` in
+`F` is the PPO `gamma` (per decision). A truncated episode is not terminal:
+`Phi` of the final observation is used and its value is bootstrapped.
+
+Shaped values lie in `[-1 - coef, 1 + coef]`, outside tanh's range, so the
+config requires `model.value_activation: none` when shaping is on. The
+material values are a heuristic: the policy is still optimal for the true
+reward, but learning is biased toward material in the short run.
+
+`train_log.csv` reports both `episode_reward` (game result only) and
+`episode_shaped_return` (undiscounted sum of the training rewards).
 
 ## 6. Termination vs truncation
 
@@ -145,7 +182,7 @@ with many more games (hundreds) before drawing conclusions.
 `<output_dir>/train_log.csv` (one row per iteration): policy/value loss,
 entropy, approx KL, clip fraction, mean advantage, mean return, explained
 variance, gradient norm (pre-clip), learning rate used, epochs run, mean
-episode reward and length, wins/draws/losses/truncated in the rollout,
+episode reward (game result) and shaped return, episode length, wins/draws/losses/truncated in the rollout,
 decisions/episodes so far, and `env_seconds`, `inference_seconds`,
 `update_seconds`, `wall_seconds`. `eval_log.csv` holds evaluation rows.
 
@@ -212,15 +249,17 @@ be legal, and resumes for one more update, all in a few seconds on CPU.
 * Opponents are fixed baselines; there is no self-play, league, or search
   (Phase 5). A policy that beats the weak baselines is not necessarily good
   at Xiangqi, and it may overfit to their weaknesses.
-* The reward is sparse and games against random play often end in draws by
-  the ply limit, so learning signal early in training can be weak; no reward
-  shaping is used.
+* Without shaping the reward is sparse and learning signal is weak (see 5a).
+  With shaping, the agent may still prefer material over mating attacks in
+  the short run; potential-based shaping keeps the optimum but not the
+  learning dynamics. Whether shaping actually improves play has not yet been
+  measured.
 * The observation does not encode perpetual-check history (Phase 2).
 * Single environment, no vectorisation; pure-Python engine speed bounds
   throughput.
-* Default hyper-parameters are reasonable starting values, not tuned. In the
-  one measured baseline iteration the first update showed a high clip
-  fraction (~0.57) and approx KL (~0.07), so a lower learning rate or
-  `target_kl` may be needed.
+* Default hyper-parameters are starting values, not tuned. A run with
+  `learning_rate: 3e-4` showed approx KL of 0.05-0.09 per update, so the
+  baseline config now uses `1e-4` with `target_kl: 0.02`; this change is
+  based on that one observation.
 * CUDA code paths are exercised by tests only when a CUDA build of PyTorch
   and a GPU are present; they have not been run on the development machine.

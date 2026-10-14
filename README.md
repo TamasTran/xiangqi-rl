@@ -62,8 +62,9 @@ The exact rules, coordinate convention, and policies are documented in
 
 * `xiangqi_rl.algorithms.ppo`: PPO trainer against the random/heuristic
   baselines (trained side alternates RED/BLACK), fixed-perspective wrapper,
-  GAE with termination/truncation handling, CSV metrics, periodic
-  evaluation, `latest.pt`/`best.pt` and resume.
+  GAE with termination/truncation handling, optional potential-based
+  material reward shaping, CSV metrics, periodic evaluation,
+  `latest.pt`/`best.pt` and resume.
 * `scripts/train_ppo.py`, `scripts/evaluate_ppo.py`, `configs/ppo_baseline.yaml`.
 * The tests verify the implementation; **no claim is made that the agent
   has learned to play well** (no long training run has been performed).

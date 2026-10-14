@@ -16,10 +16,10 @@ model:                   # xiangqi_rl.nn.ModelConfig (observation/action sizes c
   policy_channels: 8
   value_channels: 8
   value_hidden: 64
-  value_activation: tanh
+  value_activation: none  # required when material_shaping_coef > 0 (shaped values exceed [-1, 1])
 
 optimizer: adam          # adam | adamw | sgd
-learning_rate: 0.0003
+learning_rate: 0.0001   # 3e-4 gave approx_kl ~0.05-0.09 per update in a 400-iteration run
 adam_eps: 0.00001
 weight_decay: 0.0
 lr_schedule: linear      # none | linear (to 0 over total_iterations)
@@ -32,7 +32,7 @@ vf_coef: 0.5
 ent_coef: 0.01
 max_grad_norm: 0.5
 normalize_advantages: true
-target_kl: null          # e.g. 0.05 to stop epochs early
+target_kl: 0.02         # stop the update epochs early once mean approx-KL exceeds this
 rollout_steps: 2048      # trained-agent decisions per rollout
 minibatch_size: 256
 update_epochs: 4
@@ -41,6 +41,7 @@ opponents: [random, heuristic]   # one drawn uniformly per episode
 color_schedule: alternate        # alternate | red | black | random
 game_max_plies: 200              # engine draw rule (natural terminal result)
 max_episode_plies: null          # external limit -> truncation (bootstrapped)
+material_shaping_coef: 0.5       # potential-based material shaping (0 = sparse win/draw/loss only)
 
 eval_interval: 10        # iterations; 0 disables evaluation
 eval_games: 20           # per opponent, even (both colours equally)
