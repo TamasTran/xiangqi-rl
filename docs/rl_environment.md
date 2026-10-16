@@ -151,9 +151,13 @@ the game.
   (largest capture or a mate) and plays the move whose worst case is best;
   a move after which the opponent has no legal move wins at once. It
   declines defended pieces, sees mate in one and avoids allowing mate in one.
-  Limits: no deeper tactics, stalemating replies are not detected, ~6x
-  slower than the heuristic (about 25 ms per move on the development CPU).
-  In 40-game matches it beat both `random` and `heuristic` 40-0.
+  It also asks the engine whether its move, or the opponent's reply, would
+  end the game by repetition and avoids losing that way
+  (`avoid_repetition_loss=True`; set it to `False` for the blind version).
+  Limits: no deeper tactics, stalemating replies are not detected, only the
+  immediate effect of repetition is seen, ~6x slower than the heuristic
+  (about 25 ms per move on the development CPU). In 40-game matches it beat
+  both `random` and `heuristic` 40-0.
 
 ## 10. Evaluation
 

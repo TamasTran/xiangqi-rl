@@ -6,13 +6,14 @@ Phase 2 match runner with the model in ``eval`` mode and no gradients.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 import torch
 from torch import nn
 
 from xiangqi_rl.agents import HeuristicAgent, LookaheadAgent, RandomAgent
-from xiangqi_rl.engine import Game, GameConfig, Side
+from xiangqi_rl.engine import Game, GameConfig, GameResult, Side
 from xiangqi_rl.env import encode_observation, legal_action_mask
 from xiangqi_rl.evaluation.match_runner import run_match
 from xiangqi_rl.evaluation.metrics import ColorStats
@@ -70,6 +71,11 @@ class EvalResult:
     invalid_actions: int
     average_plies: float
     by_color: dict[str, ColorStats] = field(default_factory=dict)
+    reasons: dict[str, int] = field(default_factory=dict)
+    """Counts keyed ``"<win|loss|draw>_<termination reason>"``, e.g.
+    ``win_checkmate`` or ``win_perpetual_check`` (the opponent repeated its
+    checks and lost by the repetition rule). Externally truncated games are
+    ``truncated_external_step_limit``."""
 
     @property
     def win_rate(self) -> float:
@@ -83,6 +89,23 @@ class EvalResult:
     def score(self) -> float:
         """Win = 1, draw/truncation = 0.5, loss = 0."""
         return (self.wins + 0.5 * (self.draws + self.truncated)) / self.games if self.games else 0.0
+
+
+def outcome_reasons(records, policy_name: str = POLICY_NAME) -> dict[str, int]:
+    """Count ``"<outcome>_<reason>"`` from the policy's point of view."""
+    counts: Counter[str] = Counter()
+    for r in records:
+        side = Side.RED if r.red == policy_name else Side.BLACK
+        if r.truncated:
+            outcome = "truncated"
+        elif r.result is GameResult.DRAW:
+            outcome = "draw"
+        elif r.result is GameResult.win_for(side):
+            outcome = "win"
+        else:
+            outcome = "loss"
+        counts[f"{outcome}_{r.termination or 'unknown'}"] += 1
+    return dict(sorted(counts.items()))
 
 
 def make_baseline(name: str, seed: int):
@@ -118,7 +141,7 @@ def evaluate_against_baselines(
     try:
         for name in opponents:
             policy = PolicyAgent(model, device, greedy=greedy, seed=seed)
-            stats, _ = run_match(
+            stats, records = run_match(
                 policy,
                 make_baseline(name, seed),
                 games,
@@ -141,6 +164,7 @@ def evaluate_against_baselines(
                     side.name.lower(): stats.by_agent_color.get((POLICY_NAME, side), ColorStats())
                     for side in Side
                 },
+                reasons=outcome_reasons(records),
             )
     finally:
         model.train(was_training)

@@ -53,6 +53,7 @@ def main() -> None:
               f"avg_plies={r.average_plies:.1f} illegal_actions={r.invalid_actions}")
         for color, c in r.by_color.items():
             print(f"  as {color:<5}: games={c.games} W{c.wins} D{c.draws} L{c.losses}")
+        print("  how games ended:", ", ".join(f"{k}={v}" for k, v in r.reasons.items()))
     print("\nNote: with few games these numbers are noisy; compare checkpoints with the same seed.")
 
 

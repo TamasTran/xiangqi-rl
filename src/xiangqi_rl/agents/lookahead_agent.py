@@ -10,13 +10,21 @@ reply and scores ``m`` by the worst outcome (minimax over two plies)::
   if ``r`` checkmates us.
 * If the opponent has *no* legal reply after ``m`` (checkmate or stalemate),
   ``m`` wins outright.
+* Repetition (``avoid_repetition_loss``, default on): if ``m`` -- or the
+  opponent's reply to ``m`` -- would repeat a position often enough for the
+  engine's repetition rule to end the game, the outcome is taken from the
+  engine itself: a loss (e.g. perpetual check by us) scores ``-MATE_SCORE``, a
+  win ``+MATE_SCORE`` and a draw ``0``.
 
 So, unlike the one-ply heuristic, it does not take a defended piece with a
 more valuable one, it moves attacked pieces away, it sees mate in one and it
 avoids moves that allow mate in one.
 
 Limits: two plies only (no recapture chains, no deeper tactics); replies that
-stalemate us are not detected; repetition and the ply limit are ignored. It is
+stalemate us are not detected; only the *immediate* effect of repetition is
+seen (it does not plan to avoid a repetition several moves ahead) and the ply
+limit is ignored. Without ``avoid_repetition_loss`` it is blind to repetition
+and will happily check forever and lose by the perpetual-check rule. It is
 a baseline, not a strong engine. It is about 6x slower per move than
 :class:`HeuristicAgent` (~25 ms vs ~4 ms in pure Python, measured on the
 development CPU), because it generates the opponent's legal replies for every
@@ -27,11 +35,12 @@ from __future__ import annotations
 
 import math
 import random
+from collections import Counter
 from typing import Literal
 
 from xiangqi_rl.agents.base import NoLegalActionError
 from xiangqi_rl.agents.heuristic_agent import HeuristicConfig
-from xiangqi_rl.engine import Game, PieceType, Side
+from xiangqi_rl.engine import Game, PieceType, Side, TerminationReason, position_key
 from xiangqi_rl.engine.constants import has_crossed_river
 from xiangqi_rl.engine.rules import generate_legal_moves, has_legal_move, is_in_check
 
@@ -49,12 +58,14 @@ class LookaheadAgent:
         seed: int | None = None,
         tie_break: Literal["random", "first"] = "random",
         name: str = "lookahead",
+        avoid_repetition_loss: bool = True,
     ) -> None:
         if tie_break not in ("random", "first"):
             raise ValueError(f"tie_break must be 'random' or 'first', got {tie_break!r}")
         self.name = name
         self.config = config if config is not None else HeuristicConfig()
         self._tie_break = tie_break
+        self.avoid_repetition_loss = avoid_repetition_loss
         self._rng = random.Random(seed)
 
     @property
@@ -92,6 +103,28 @@ class LookaheadAgent:
         side, opponent = game.side_to_move, game.side_to_move.opponent
         cells = board.squares
 
+        threshold = game.config.repetition_threshold if self.avoid_repetition_loss else None
+        seen = Counter(game.position_keys) if threshold is not None else Counter()
+
+        def repeats(position, to_move: Side) -> bool:
+            """Would reaching ``position`` complete ``threshold`` occurrences?"""
+            return threshold is not None and seen[position_key(position, to_move)] + 1 >= threshold
+
+        def repetition_value(*moves) -> float | None:
+            """Our value if playing ``moves`` ends the game by the engine's
+            repetition rule (asked of the engine itself); else ``None``."""
+            trial = game.copy()
+            for m in moves:
+                trial.make_move(m)
+            if trial.termination_reason not in (TerminationReason.REPETITION,
+                                                TerminationReason.PERPETUAL_CHECK):
+                return None
+            if trial.winner is side:
+                return MATE_SCORE
+            if trial.winner is opponent:
+                return -MATE_SCORE
+            return 0.0
+
         def gain(move) -> float:
             target = cells[move.to_sq]
             g = 0.0 if target is None else self._value(target.kind)
@@ -109,6 +142,8 @@ class LookaheadAgent:
             replies = generate_legal_moves(after, opponent)
             if not replies:  # opponent is checkmated or stalemated: both lose
                 score = MATE_SCORE
+            elif repeats(after, opponent) and (forced := repetition_value(move)) is not None:
+                score = forced  # the move itself ends the game by repetition
             else:
                 g = gain(move)
                 after_cells = after.squares
@@ -119,11 +154,16 @@ class LookaheadAgent:
 
                 score = math.inf
                 for reply in sorted(replies, key=lambda r: -loss(r)):
-                    score = min(score, g - loss(reply))
                     reply_board = after.apply_move(reply)
                     if is_in_check(reply_board, side) and not has_legal_move(reply_board, side):
                         score = -MATE_SCORE  # this reply mates us
                         break
+                    value = g - loss(reply)
+                    if repeats(reply_board, side):
+                        ended = repetition_value(move, reply)
+                        if ended is not None:
+                            value = ended  # this reply ends the game by repetition
+                    score = min(score, value)
                     if score < best:  # already worse than the best move: prune
                         break
             best = max(best, score)

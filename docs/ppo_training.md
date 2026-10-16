@@ -170,8 +170,11 @@ alternating colours, through the Phase 2 match runner. It never touches
 rollout data or the training RNGs, restores the model's train/eval mode, and
 uses fixed seeds (`eval_seed`) so checkpoints are comparable. Reported per
 opponent: games, wins/draws/losses/truncated, win rate, draw rate, average
-plies, illegal-action count (an illegal action forfeits the game) and the
-per-colour breakdown. Evaluation runs before training (iteration 0) and every
+plies, illegal-action count (an illegal action forfeits the game), the
+per-colour breakdown and how games ended (`win_checkmate`,
+`win_perpetual_check`, `loss_stalemate`, `draw_max_plies`, ...). If the
+columns of an existing log differ from the current code, the old file is
+kept as `<name>.old` and a new one is started. Evaluation runs before training (iteration 0) and every
 `eval_interval` iterations. The "best" checkpoint is the one with the highest
 mean score (win = 1, draw = 0.5) over the evaluation opponents. With the
 default 20 games per opponent the numbers are noisy; use `evaluate_ppo.py`
@@ -187,6 +190,29 @@ blindness to recaptures and mate threats. Re-evaluated against the two-ply
 baseline config therefore trains and evaluates against all three opponents.
 `lookahead` makes each opponent move ~6x slower than `heuristic`, so
 iterations take longer.
+
+**Second finding.** A 2000-iteration run against all three opponents reached
+~90% wins against `lookahead` in the training evaluations, but 36 of 40 of
+those wins ended by `perpetual_check`: the first version of `lookahead` was
+blind to repetition, kept checking with one rook while the agent shuffled its
+general, and lost by the engine's repetition rule. `LookaheadAgent` now asks
+the engine whether its move (or the opponent's reply) ends the game by
+repetition and avoids losing that way (`avoid_repetition_loss`, default on).
+Against this version the same checkpoints won **0 of 40** games. Hence
+`eval_log.csv` now records *how* games ended (`win_checkmate`,
+`win_perpetual_check`, `loss_stalemate`, ...); judge strength by
+`win_checkmate`, not by `wins`. The two numbers differ whenever the opponent
+can lose by repetition.
+
+**Colour asymmetry against `heuristic`.** Over 60 games each (greedy policy):
+as BLACK 58 wins / 2 losses in ~28 plies, as RED 30 wins / 7 draws / 23
+losses. As BLACK, over half of the games are the same six opening plies: the
+heuristic always opens by capturing a horse with its cannon and the policy
+has memorised the refutation. As RED, the policy always opens `b2b4`, which
+gives the heuristic's cannon a screen to capture the horse on `b0` at once
+(the first piece lost in all 23 losses); the sacrifice sometimes works, so
+the result is a coin flip. Both are opening lines against a deterministic
+greedy opponent rather than general play.
 
 ## 9. Metrics and files
 
