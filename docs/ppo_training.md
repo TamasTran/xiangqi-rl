@@ -232,6 +232,40 @@ update for 2048 decisions, i.e. the CPU-bound game simulation and per-step
 inference are comparable to the optimisation; a GPU mainly helps the update
 and does not remove the simulation cost.
 
+### Parallel games and GPU use
+
+The network runs on the GPU, but the rules engine and the baseline opponents
+are pure Python and can only run on CPU cores (moving them to the GPU would
+mean re-implementing the rules as tensor operations). With one game at a
+time the GPU receives batches of one position and mostly waits.
+`num_envs: 16` plays 16 games in lock-step: every step the network evaluates
+all 16 positions in **one batched forward pass**, and `env_workers` spreads
+the games over CPU worker processes (`spawn` start method; the main program
+must be a script file). Each environment has its own seeds; colours are
+staggered; the buffer stores the games interleaved and GAE runs per game.
+Worker processes give exactly the same results as `env_workers: 0` (tested).
+
+Measured on the CPU-only development machine (default model, three
+opponents, 512 decisions per rollout):
+
+| setting | decisions/s |
+|---|---|
+| `num_envs: 1` (old behaviour) | 79 |
+| `num_envs: 16`, `env_workers: 0` | 248 |
+| `num_envs: 16`, `env_workers: 4` | 333 |
+| `num_envs: 16`, `env_workers: 8` | 333 |
+
+Batching cut inference from 2.5 s to 0.5 s per 512 decisions. Workers helped
+less than the core count suggests: games advance in lock-step, so every step
+waits for the slowest game, and a game against `lookahead` is ~10x slower
+than one against `random`. On Kaggle the gain has not been measured yet; the
+first notebook cell prints the CPU core count.
+
+`num_envs` changes the trajectories (runs are reproducible for a fixed
+`num_envs`, not across different values). With 2048 decisions and 16 games,
+each game contributes 128 consecutive decisions per rollout and GAE
+bootstraps at each game's rollout edge.
+
 ## 10. Checkpoints and resuming
 
 `latest.pt` (every `checkpoint_interval` iterations and at the end) and

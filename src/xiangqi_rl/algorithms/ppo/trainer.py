@@ -13,6 +13,7 @@ modified inside :meth:`update`).
 from __future__ import annotations
 
 import math
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -24,14 +25,13 @@ import torch
 
 from xiangqi_rl.algorithms.ppo.buffer import RolloutBuffer
 from xiangqi_rl.algorithms.ppo.config import PPOConfig
-from xiangqi_rl.algorithms.ppo.distributions import act, evaluate_actions, state_value
+from xiangqi_rl.algorithms.ppo.distributions import act_batch, evaluate_actions, values_batch
 from xiangqi_rl.algorithms.ppo.logger import CSVLogger
 from xiangqi_rl.algorithms.ppo.losses import ppo_policy_loss, total_loss, value_loss
-from xiangqi_rl.algorithms.ppo.opponent_env import OpponentEnv
 from xiangqi_rl.algorithms.ppo.returns import explained_variance
 from xiangqi_rl.algorithms.ppo.seeding import resolve_device, seed_everything
-from xiangqi_rl.engine import GameConfig
-from xiangqi_rl.evaluation.ppo_evaluator import EvalResult, evaluate_against_baselines, make_baseline
+from xiangqi_rl.algorithms.ppo.vec_env import EnvSpec, VecEnv, make_vec_env
+from xiangqi_rl.evaluation.ppo_evaluator import EvalResult, evaluate_against_baselines
 from xiangqi_rl.nn import PolicyValueNet, create_model, load_checkpoint, save_checkpoint
 
 TRAIN_COLUMNS = [
@@ -140,20 +140,9 @@ class PPOTrainer:
         else:
             self.scheduler = None
 
-        self._opponent_agents = [
-            make_baseline(name, config.seed + 1 + i) for i, name in enumerate(config.opponents)
-        ]
-        self.env = OpponentEnv(
-            self._opponent_agents,
-            game_config=GameConfig(max_plies=config.game_max_plies),
-            max_episode_plies=config.max_episode_plies,
-            color_schedule=config.color_schedule,
-            seed=config.seed,
-            material_shaping_coef=config.material_shaping_coef,
-            shaping_gamma=config.gamma,
-        )
-        self.buffer = RolloutBuffer(config.rollout_steps, self.env.observation_shape,
-                                    self.env.action_dim)
+        self.envs: VecEnv = make_vec_env(self._env_specs(), self._resolve_workers())
+        self.buffer = RolloutBuffer(config.rollout_steps, self.envs.observation_shape,
+                                    self.envs.action_dim, num_envs=config.num_envs)
         self._np_rng = np.random.default_rng(config.seed)
 
         self.iteration = 0
@@ -162,11 +151,12 @@ class PPOTrainer:
         self.best_eval_score = -math.inf
         self._wall_seconds = 0.0
 
+        # Current decision point of every environment, and per-episode
+        # counters carried across rollout boundaries.
         self._obs: np.ndarray | None = None
-        self._mask: np.ndarray | None = None
-        # Per-episode counters carried across rollout boundaries.
-        self._episode_decisions = 0
-        self._episode_shaped_return = 0.0
+        self._masks: np.ndarray | None = None
+        self._episode_decisions = np.zeros(config.num_envs, dtype=np.int64)
+        self._episode_shaped_return = np.zeros(config.num_envs, dtype=np.float64)
 
         out = Path(config.output_dir)
         self.output_dir = out
@@ -174,6 +164,39 @@ class PPOTrainer:
         self.eval_log = CSVLogger(out / "eval_log.csv", EVAL_COLUMNS)
 
     # ------------------------------------------------------------------ setup
+
+    def _env_specs(self) -> list[EnvSpec]:
+        """One spec per environment. Environment 0 uses the same seeds as the
+        original single-environment trainer; colours are staggered."""
+        c = self.config
+        specs = []
+        for e in range(c.num_envs):
+            base = c.seed + 7919 * e
+            specs.append(EnvSpec(
+                opponents=tuple(c.opponents),
+                opponent_seeds=tuple(base + 1 + i for i in range(len(c.opponents))),
+                seed=base,
+                game_max_plies=c.game_max_plies,
+                max_episode_plies=c.max_episode_plies,
+                color_schedule=c.color_schedule,
+                material_shaping_coef=c.material_shaping_coef,
+                shaping_gamma=c.gamma,
+                color_offset=e,
+            ))
+        return specs
+
+    def _resolve_workers(self) -> int:
+        workers = self.config.env_workers
+        if workers == -1:
+            # One core stays free for the trainer process (batched inference,
+            # PPO updates); measured: more workers than that only competed for
+            # the CPU with inference.
+            workers = min(self.config.num_envs, max(1, (os.cpu_count() or 2) - 1))
+        return workers
+
+    def close(self) -> None:
+        """Stop environment worker processes (if any)."""
+        self.envs.close()
 
     def _make_optimizer(self) -> torch.optim.Optimizer:
         c, params = self.config, self.model.parameters()
@@ -191,71 +214,72 @@ class PPOTrainer:
     def collect_rollout(self) -> tuple[list[EpisodeStats], dict[str, float]]:
         """Fill the buffer with ``rollout_steps`` decisions of the *current*
         policy (no gradients) and compute GAE. Returns finished-episode stats
-        and timing information."""
+        and timing information.
+
+        All ``num_envs`` games advance together: one batched forward pass per
+        step chooses every game's move, then the games are stepped (in worker
+        processes when ``env_workers`` > 0).
+        """
         cfg = self.config
         self.buffer.reset()
         self.model.eval()
         episodes: list[EpisodeStats] = []
         env_time = inf_time = 0.0
-        decisions_in_episode = self._episode_decisions
-        shaped_return = self._episode_shaped_return
 
         if self._obs is None:
             t0 = time.perf_counter()
-            self._obs, info = self.env.reset()
-            self._mask = info["action_mask"]
+            self._obs, self._masks = self.envs.reset()
             env_time += time.perf_counter() - t0
-            decisions_in_episode = 0
-            shaped_return = 0.0
+            self._episode_decisions[:] = 0
+            self._episode_shaped_return[:] = 0.0
 
-        for _ in range(cfg.rollout_steps):
+        for _ in range(cfg.rollout_steps // cfg.num_envs):
             t0 = time.perf_counter()
-            action, log_prob, value = act(self.model, self._obs, self._mask, self.device)
+            actions, log_probs, values = act_batch(self.model, self._obs, self._masks, self.device)
             inf_time += time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            next_obs, reward, terminated, truncated, info = self.env.step(action)
+            next_obs, next_masks, rewards, terminated, truncated, infos, finals = (
+                self.envs.step(actions))
             env_time += time.perf_counter() - t0
-            decisions_in_episode += 1
-            shaped_return += reward
+            self._episode_decisions += 1
+            self._episode_shaped_return += rewards
 
-            truncation_value = 0.0
-            if truncated:
+            truncation_values = np.zeros(cfg.num_envs, dtype=np.float32)
+            cut = np.flatnonzero(truncated)
+            if len(cut):
                 # Bootstrap from the final observation, expressed from the
                 # trained agent's perspective (the side to move may be the
                 # opponent there, which flips the sign of the value).
                 t0 = time.perf_counter()
-                sign = 1.0 if info["side_to_move"] == info["agent_side"] else -1.0
-                truncation_value = sign * state_value(self.model, next_obs, self.device)
+                v = values_batch(self.model, np.stack([finals[i] for i in cut]), self.device)
+                for j, i in enumerate(cut):
+                    sign = 1.0 if infos[i]["side_to_move"] == infos[i]["agent_side"] else -1.0
+                    truncation_values[i] = sign * v[j]
                 inf_time += time.perf_counter() - t0
 
-            self.buffer.add(self._obs, self._mask, action, log_prob, value, reward,
-                            terminated, truncated, truncation_value)
+            self.buffer.add_batch(self._obs, self._masks, actions, log_probs, values, rewards,
+                                  terminated, truncated, truncation_values)
 
-            if terminated or truncated:
+            for i in np.flatnonzero(terminated | truncated):
+                info = infos[i]
                 # Outcome from the *game* reward, never from the (shaped) training reward.
                 game_reward = info["game_reward"]
-                outcome = "truncated" if truncated else (
+                outcome = "truncated" if truncated[i] else (
                     "win" if game_reward > 0 else "loss" if game_reward < 0 else "draw")
-                episodes.append(EpisodeStats(game_reward, shaped_return, decisions_in_episode,
-                                             info["ply"], outcome, info["agent_side"],
-                                             info["opponent"]))
-                t0 = time.perf_counter()
-                self._obs, new_info = self.env.reset()
-                env_time += time.perf_counter() - t0
-                self._mask = new_info["action_mask"]
-                decisions_in_episode = 0
-                shaped_return = 0.0
-            else:
-                self._obs, self._mask = next_obs, info["action_mask"]
-        self._episode_decisions = decisions_in_episode
-        self._episode_shaped_return = shaped_return
+                episodes.append(EpisodeStats(
+                    game_reward, float(self._episode_shaped_return[i]),
+                    int(self._episode_decisions[i]), info["ply"], outcome,
+                    info["agent_side"], info["opponent"]))
+                self._episode_decisions[i] = 0
+                self._episode_shaped_return[i] = 0.0
+            self._obs, self._masks = next_obs, next_masks
 
-        # The current observation is a live decision point of the agent.
+        # The current observations are live decision points of the agent.
         t0 = time.perf_counter()
-        last_value = state_value(self.model, self._obs, self.device)
+        last_values = values_batch(self.model, self._obs, self.device)
         inf_time += time.perf_counter() - t0
-        self.buffer.compute_advantages(last_value, cfg.gamma, cfg.gae_lambda,
+        self.buffer.compute_advantages(last_values, cfg.gamma, cfg.gae_lambda,
                                        normalize=cfg.normalize_advantages)
         self.total_decisions += cfg.rollout_steps
         self.total_episodes += len(episodes)
@@ -447,7 +471,6 @@ class PPOTrainer:
     # ------------------------------------------------------------------ checkpoints
 
     def _training_state(self) -> dict[str, Any]:
-        agent_states = [a.rng_state for a in self._opponent_agents]
         return {
             "kind": "ppo_training",
             "ppo_config": self.config.to_dict(),
@@ -456,7 +479,7 @@ class PPOTrainer:
             "total_episodes": self.total_episodes,
             "best_eval_score": None if self.best_eval_score == -math.inf else self.best_eval_score,
             "wall_seconds": self._wall_seconds,
-            "episodes_started": self.env.episodes_started,
+            "envs": self.envs.get_state(),
             "scheduler_state_dict": None if self.scheduler is None else self.scheduler.state_dict(),
             "rng": {
                 "python": random.getstate(),
@@ -464,8 +487,6 @@ class PPOTrainer:
                 "numpy_trainer": self._np_rng.bit_generator.state,
                 "torch": torch.get_rng_state(),
                 "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
-                "env": self.env.rng_state,
-                "opponents": agent_states,
             },
         }
 
@@ -482,7 +503,9 @@ class PPOTrainer:
     ) -> PPOTrainer:
         """Rebuild a trainer and restore model, optimizer, scheduler, counters
         and RNG states. A fresh episode is started (a half-finished episode is
-        not stored); rollouts are always collected fresh anyway.
+        not stored); rollouts are always collected fresh anyway. If
+        ``num_envs`` changed, the saved environment states are applied to the
+        first environments and the others start from their own seeds.
 
         ``config`` may change run settings (e.g. ``total_iterations``) but its
         model config must match the checkpoint.
@@ -519,7 +542,6 @@ class PPOTrainer:
         best = state["best_eval_score"]
         trainer.best_eval_score = -math.inf if best is None else float(best)
         trainer._wall_seconds = float(state["wall_seconds"])
-        trainer.env.episodes_started = int(state["episodes_started"])
 
         rng = state["rng"]
         random.setstate(_to_tuple(rng["python"]))
@@ -528,9 +550,16 @@ class PPOTrainer:
         torch.set_rng_state(rng["torch"].cpu())
         if torch.cuda.is_available() and len(rng["torch_cuda"]) == torch.cuda.device_count():
             torch.cuda.set_rng_state_all([t.cpu() for t in rng["torch_cuda"]])
-        trainer.env.rng_state = _to_tuple(rng["env"])
-        for agent, agent_state in zip(trainer._opponent_agents, rng["opponents"]):
-            agent.rng_state = _to_tuple(agent_state)
+        if "envs" in state:
+            env_states = state["envs"]
+        else:  # single-environment checkpoint written before num_envs existed
+            env_states = [{"rng": rng["env"], "episodes_started": state["episodes_started"],
+                           "opponents": rng["opponents"]}]
+        trainer.envs.set_state([
+            {"rng": _to_tuple(s["rng"]), "episodes_started": int(s["episodes_started"]),
+             "opponents": [_to_tuple(o) for o in s["opponents"]]}
+            for s in env_states
+        ])
         return trainer
 
 

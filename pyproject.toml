@@ -22,3 +22,6 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-m 'not slow'"
 markers = ["slow: long-running checks such as perft depth 4 (run with: pytest -m slow)"]
+# PPO tests write model checkpoints; keep temporary directories only for
+# failed tests instead of the last three full runs (~0.5 GB each).
+tmp_path_retention_policy = "failed"

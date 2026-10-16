@@ -49,6 +49,8 @@ class OpponentEnv:
         shaping_gamma: Discount used in ``gamma * Phi(s') - Phi(s)``; must equal
             the PPO ``gamma`` (per agent decision) for the shaping to be
             potential-based.
+        color_offset: Shifts the ``alternate`` schedule (odd: BLACK first), so
+            parallel environments do not all start with the same colour.
     """
 
     def __init__(
@@ -62,6 +64,7 @@ class OpponentEnv:
         initial_fen: str | None = None,
         material_shaping_coef: float = 0.0,
         shaping_gamma: float = 1.0,
+        color_offset: int = 0,
     ) -> None:
         if not opponents:
             raise ValueError("at least one opponent is required")
@@ -83,6 +86,7 @@ class OpponentEnv:
         self._opponent_moves = 0
         self._shaping_coef = material_shaping_coef
         self._shaping_gamma = shaping_gamma
+        self._color_offset = color_offset
         self._potential = 0.0
 
     # ------------------------------------------------------------------ RNG state
@@ -172,7 +176,7 @@ class OpponentEnv:
             return Side.BLACK
         if self._schedule == "random":
             return Side.RED if self._rng.random() < 0.5 else Side.BLACK
-        return Side.RED if self.episodes_started % 2 == 0 else Side.BLACK
+        return Side.RED if (self.episodes_started + self._color_offset) % 2 == 0 else Side.BLACK
 
     def _opponent_move(self) -> tuple[np.ndarray, bool, bool]:
         action = self.opponent.select_action(self._env.game_copy())

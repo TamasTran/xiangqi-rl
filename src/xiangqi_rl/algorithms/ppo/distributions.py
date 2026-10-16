@@ -18,6 +18,36 @@ from xiangqi_rl.nn import MaskedCategorical
 
 
 @torch.no_grad()
+def act_batch(
+    model: nn.Module,
+    observations: np.ndarray,
+    masks: np.ndarray,
+    device: torch.device,
+    greedy: bool = False,
+    generator: torch.Generator | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Choose a legal action for each of ``N`` positions in one forward pass.
+
+    Returns ``(actions [N] int64, log_probs [N] float32, values [N] float32)``
+    under the current (behaviour) policy; values are side-to-move.
+    """
+    obs = torch.from_numpy(np.ascontiguousarray(observations)).to(device, non_blocking=True)
+    legal = torch.from_numpy(np.ascontiguousarray(masks)).to(device, non_blocking=True)
+    logits, values = model(obs)
+    dist = MaskedCategorical(logits, legal)  # raises on an all-False row
+    actions = dist.mode() if greedy else dist.sample(generator)
+    log_probs = dist.log_prob(actions)
+    return (actions.cpu().numpy().astype(np.int64), log_probs.cpu().numpy().astype(np.float32),
+            values.squeeze(-1).cpu().numpy().astype(np.float32))
+
+
+@torch.no_grad()
+def values_batch(model: nn.Module, observations: np.ndarray, device: torch.device) -> np.ndarray:
+    """Value estimates ``[N]`` (side-to-move perspective) in one forward pass."""
+    obs = torch.from_numpy(np.ascontiguousarray(observations)).to(device, non_blocking=True)
+    return model(obs)[1].squeeze(-1).cpu().numpy().astype(np.float32)
+
+
 def act(
     model: nn.Module,
     observation: np.ndarray,
@@ -26,25 +56,14 @@ def act(
     greedy: bool = False,
     generator: torch.Generator | None = None,
 ) -> tuple[int, float, float]:
-    """Choose a legal action for one position.
-
-    Returns ``(action, log_prob, value)`` under the current (behaviour) policy;
-    ``value`` is from the side-to-move perspective.
-    """
-    obs = torch.from_numpy(observation).unsqueeze(0).to(device)
-    legal = torch.from_numpy(mask).unsqueeze(0).to(device)
-    logits, value = model(obs)
-    dist = MaskedCategorical(logits, legal)  # raises on an all-False mask
-    action = dist.mode() if greedy else dist.sample(generator)
-    log_prob = dist.log_prob(action)
-    return int(action.item()), float(log_prob.item()), float(value.item())
+    """Single-position version of :func:`act_batch`: ``(action, log_prob, value)``."""
+    a, lp, v = act_batch(model, observation[None], mask[None], device, greedy, generator)
+    return int(a[0]), float(lp[0]), float(v[0])
 
 
-@torch.no_grad()
 def state_value(model: nn.Module, observation: np.ndarray, device: torch.device) -> float:
     """Value estimate (side-to-move perspective) of a single observation."""
-    obs = torch.from_numpy(observation).unsqueeze(0).to(device)
-    return float(model(obs)[1].item())
+    return float(values_batch(model, observation[None], device)[0])
 
 
 def evaluate_actions(

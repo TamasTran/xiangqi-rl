@@ -5,6 +5,11 @@ buffer: after an update it must be :meth:`reset` and refilled with data from
 the updated policy. Minibatch iteration is refused until the buffer is full
 and advantages have been computed, which prevents training on partial or
 stale data.
+
+With ``num_envs = E`` parallel environments the decisions are stored
+time-major and interleaved: entry ``t * E + e`` is step ``t`` of environment
+``e`` (so ``E = 1`` is a plain sequence). GAE runs separately along each
+environment's own sequence ``arr[e::E]``; minibatches mix all of them.
 """
 
 from __future__ import annotations
@@ -39,15 +44,25 @@ class RolloutBuffer:
     """Storage for one PPO rollout.
 
     Args:
-        capacity: Number of decisions per rollout.
+        capacity: Number of decisions per rollout (all environments together).
         observation_shape: e.g. ``(17, 10, 9)``.
         action_dim: Size of the action space (mask length).
+        num_envs: Parallel environments; must divide ``capacity``.
     """
 
-    def __init__(self, capacity: int, observation_shape: tuple[int, ...], action_dim: int) -> None:
+    def __init__(
+        self,
+        capacity: int,
+        observation_shape: tuple[int, ...],
+        action_dim: int,
+        num_envs: int = 1,
+    ) -> None:
         if capacity < 1:
             raise ValueError(f"capacity must be >= 1, got {capacity}")
+        if num_envs < 1 or capacity % num_envs:
+            raise ValueError(f"num_envs={num_envs} must be >= 1 and divide capacity={capacity}")
         self.capacity = capacity
+        self.num_envs = num_envs
         self.observation_shape = tuple(observation_shape)
         self.action_dim = action_dim
         n = capacity
@@ -122,11 +137,33 @@ class RolloutBuffer:
         self._size += 1
         self._advantages_ready = False
 
+    def add_batch(
+        self,
+        observations: np.ndarray,
+        masks: np.ndarray,
+        actions: np.ndarray,
+        log_probs: np.ndarray,
+        values: np.ndarray,
+        rewards: np.ndarray,
+        terminated: np.ndarray,
+        truncated: np.ndarray,
+        truncation_values: np.ndarray,
+    ) -> None:
+        """Append one step of all ``num_envs`` environments (row ``e`` = env ``e``)."""
+        if len(self) % self.num_envs:
+            raise BufferStateError("add_batch() cannot follow a partial add() row")
+        if len(observations) != self.num_envs:
+            raise ValueError(f"expected {self.num_envs} rows, got {len(observations)}")
+        for e in range(self.num_envs):
+            self.add(observations[e], masks[e], int(actions[e]), float(log_probs[e]),
+                     float(values[e]), float(rewards[e]), bool(terminated[e]),
+                     bool(truncated[e]), float(truncation_values[e]))
+
     # ------------------------------------------------------------------ GAE
 
     def compute_advantages(
         self,
-        last_value: float,
+        last_value: float | np.ndarray,
         gamma: float,
         gae_lambda: float,
         normalize: bool = True,
@@ -135,16 +172,22 @@ class RolloutBuffer:
         un-normalised values for diagnostics).
 
         ``last_value`` is the value of the observation *after* the last stored
-        decision (a live decision point of the trained agent).
+        decision of each environment (a live decision point of the trained
+        agent): a float for one environment or an array of ``num_envs``.
         """
         if not self.is_full:
             raise BufferStateError(f"buffer holds {self._size}/{self.capacity} decisions")
-        adv, ret = compute_gae(
-            self.rewards, self.values, self.terminated, self.truncated,
-            last_value, self.truncation_values, gamma, gae_lambda,
-        )
-        self.raw_advantages[:] = adv
-        self.returns[:] = ret
+        last = np.broadcast_to(np.asarray(last_value, dtype=np.float64), (self.num_envs,))
+        E = self.num_envs
+        for e in range(E):
+            adv, ret = compute_gae(
+                self.rewards[e::E], self.values[e::E], self.terminated[e::E],
+                self.truncated[e::E], float(last[e]), self.truncation_values[e::E],
+                gamma, gae_lambda,
+            )
+            self.raw_advantages[e::E] = adv
+            self.returns[e::E] = ret
+        adv = self.raw_advantages
         self.advantages[:] = normalize_advantages(adv) if normalize else adv
         self._advantages_ready = True
 
