@@ -64,7 +64,7 @@ def test_matches_unpruned_minimax_and_never_allows_avoidable_mate() -> None:
         while not game.is_terminal():
             if game.ply % 7 == 3:
                 naive = naive_two_ply_scores(game)
-                move = chosen(LookaheadAgent(seed=game_index), game)
+                move = chosen(LookaheadAgent(seed=game_index, avoid_repetition_loss=False), game)
                 assert naive[move] == pytest.approx(max(naive.values())), game.to_fen()
                 # If some move avoids an immediate mate, the chosen one does too.
                 if max(naive.values()) > -MATE_SCORE:
@@ -93,6 +93,41 @@ def test_avoids_moves_that_allow_mate_in_one(fen) -> None:
     assert chosen(HeuristicAgent(seed=0), game) in unsafe   # the 1-ply baseline falls for it
     for seed in range(5):
         assert chosen(LookaheadAgent(seed=seed), game) not in unsafe
+
+
+# Red rook checks every move (a8-a9, a9-a8) while Black shuffles its king. Playing
+# a9a8 after six plies lets Black's e8e9 repeat the start position a third time,
+# and the engine ends the game: Red, the only side that checked, loses.
+PERPETUAL = {"d0": "K", "a8": "R", "e9": "k"}
+CYCLE = ["a8a9", "e9e8", "a9a8", "e8e9"]
+
+
+def perpetual_position(make_fen) -> Game:
+    game = Game.from_fen(make_fen(PERPETUAL))
+    for move in CYCLE + CYCLE[:2]:
+        game.make_move(move)
+    assert game.ply == 6 and not game.is_terminal()
+    return game
+
+
+def test_avoids_completing_a_perpetual_check_loss(make_fen) -> None:
+    game = perpetual_position(make_fen)
+    trial = game.copy()
+    trial.make_move("a9a8")
+    trial.make_move("e8e9")      # the engine really ends the game here, against Red
+    assert trial.termination_reason.value == "perpetual_check" and trial.winner.name == "BLACK"
+
+    aware = {chosen(LookaheadAgent(seed=s), game) for s in range(15)}
+    assert "a9a8" not in aware
+    blind = {chosen(LookaheadAgent(seed=s, avoid_repetition_loss=False), game) for s in range(15)}
+    assert "a9a8" in blind       # without the awareness the move is picked (all moves tie)
+
+
+def test_repetition_awareness_is_a_noop_without_repetition() -> None:
+    game = Game.new_game()
+    for seed in range(3):
+        assert (chosen(LookaheadAgent(seed=seed), game)
+                == chosen(LookaheadAgent(seed=seed, avoid_repetition_loss=False), game))
 
 
 def test_only_legal_moves_and_no_mutation() -> None:

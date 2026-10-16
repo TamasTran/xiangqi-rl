@@ -47,7 +47,32 @@ EVAL_COLUMNS = [
     "draw_rate", "score", "average_plies", "invalid_actions",
     "red_games", "red_wins", "red_draws", "red_losses",
     "black_games", "black_wins", "black_draws", "black_losses", "checkpoint",
+    # how games ended, from the policy's point of view
+    "win_checkmate", "win_stalemate", "win_perpetual_check", "win_other",
+    "loss_checkmate", "loss_stalemate", "loss_perpetual_check", "loss_other",
+    "draw_repetition", "draw_max_plies", "draw_other", "truncated_external",
 ]
+
+
+_REASON_COLUMNS = (
+    "win_checkmate", "win_stalemate", "win_perpetual_check", "win_other",
+    "loss_checkmate", "loss_stalemate", "loss_perpetual_check", "loss_other",
+    "draw_repetition", "draw_max_plies", "draw_other", "truncated_external",
+)
+
+
+def reason_columns(reasons: dict[str, int]) -> dict[str, int]:
+    """Map ``"<outcome>_<reason>"`` counts onto the fixed eval-log columns;
+    reasons without their own column are summed into ``<outcome>_other``."""
+    out = dict.fromkeys(_REASON_COLUMNS, 0)
+    for key, count in reasons.items():
+        if key.startswith("truncated_"):
+            out["truncated_external"] += count
+        elif key in out:
+            out[key] += count
+        else:
+            out[key.split("_", 1)[0] + "_other"] += count
+    return out
 
 
 class NonFiniteError(FloatingPointError):
@@ -334,6 +359,7 @@ class PPOTrainer:
                 for color, c in r.by_color.items():
                     row.update({f"{color}_games": c.games, f"{color}_wins": c.wins,
                                 f"{color}_draws": c.draws, f"{color}_losses": c.losses})
+                row.update(reason_columns(r.reasons))
                 self.eval_log.log(row)
         return results
 
