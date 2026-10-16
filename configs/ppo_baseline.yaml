@@ -36,6 +36,8 @@ target_kl: 0.02         # stop the update epochs early once mean approx-KL excee
 rollout_steps: 2048      # trained-agent decisions per rollout
 minibatch_size: 256
 update_epochs: 4
+num_envs: 16             # games in parallel -> one GPU batch of 16 positions per step
+env_workers: -1          # worker processes simulating them; -1 = CPU cores - 1, 0 = none
 
 opponents: [random, heuristic, lookahead]   # one drawn uniformly per episode
 color_schedule: alternate        # alternate | red | black | random

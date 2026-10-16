@@ -233,10 +233,8 @@ def test_resume_restores_training_state(tmp_path) -> None:
     assert s1.keys() == s2.keys() and len(s1) > 0
     for k in s1:
         assert torch.equal(s1[k]["exp_avg"], s2[k]["exp_avg"]) and s1[k]["step"] == s2[k]["step"]
-    assert r.env.episodes_started == t.env.episodes_started
     assert torch.equal(torch.get_rng_state(), saved_torch_rng)
-    assert r.env.rng_state == t.env.rng_state
-    assert [a.rng_state for a in r._opponent_agents] == [a.rng_state for a in t._opponent_agents]
+    assert r.envs.get_state() == t.envs.get_state()  # env RNGs, colour counters, opponent RNGs
     assert r._np_rng.bit_generator.state == t._np_rng.bit_generator.state
 
 

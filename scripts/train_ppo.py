@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -65,7 +66,10 @@ def smoke_checks(trainer: PPOTrainer) -> None:
     )
     resumed = PPOTrainer.from_checkpoint(latest, config=cfg)
     before = resumed.iteration
-    history = resumed.train()
+    try:
+        history = resumed.train()
+    finally:
+        resumed.close()
     assert history[0]["learning_rate"] > 0
     assert resumed.iteration == before + 1
     print(f"smoke: resumed from iteration {before} and completed one more update")
@@ -96,7 +100,8 @@ def main() -> None:
         overrides["output_dir"] = args.output_dir
     if args.iterations is not None:
         overrides["total_iterations"] = args.iterations
-    if args.smoke_test and "output_dir" not in overrides:
+    temp_output = args.smoke_test and "output_dir" not in overrides
+    if temp_output:
         overrides["output_dir"] = tempfile.mkdtemp(prefix="xiangqi_ppo_smoke_")
 
     if args.resume:
@@ -112,11 +117,16 @@ def main() -> None:
 
     print(f"device={trainer.device} output_dir={trainer.output_dir} "
           f"parameters={trainer.model.num_parameters():,}")
-    trainer.train()
-    print(f"finished at iteration {trainer.iteration}; checkpoints in {trainer.output_dir}")
-    if args.smoke_test:
-        smoke_checks(trainer)
-        print("smoke test OK (verifies the pipeline, not playing strength)")
+    try:
+        trainer.train()
+        print(f"finished at iteration {trainer.iteration}; checkpoints in {trainer.output_dir}")
+        if args.smoke_test:
+            smoke_checks(trainer)
+            print("smoke test OK (verifies the pipeline, not playing strength)")
+    finally:
+        trainer.close()
+    if temp_output:
+        shutil.rmtree(trainer.output_dir, ignore_errors=True)  # only reached on success
 
 
 if __name__ == "__main__":

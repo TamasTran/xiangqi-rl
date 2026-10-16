@@ -57,8 +57,16 @@ class PPOConfig:
     target_kl: float | None = None
     """Stop the update epochs early once the mean approx-KL exceeds this."""
     rollout_steps: int = 2048
+    """Decisions per rollout, all environments together."""
     minibatch_size: int = 256
     update_epochs: int = 4
+    num_envs: int = 1
+    """Games played in parallel; each step the network gets one batch of
+    ``num_envs`` positions (better GPU use). Must divide ``rollout_steps``."""
+    env_workers: int = 0
+    """Processes that simulate those games: 0 = in the trainer process,
+    ``k`` = ``k`` worker processes, -1 = CPU cores minus one (capped at
+    ``num_envs``). The rules engine is pure Python, so it runs on CPU cores."""
 
     # --- opponents / episodes
     opponents: tuple[str, ...] = ("random", "heuristic")
@@ -119,6 +127,10 @@ class PPOConfig:
         check(1 <= self.minibatch_size <= self.rollout_steps,
               "minibatch_size must be in [1, rollout_steps]")
         check(self.update_epochs >= 1, "update_epochs must be >= 1")
+        check(self.num_envs >= 1 and self.rollout_steps % self.num_envs == 0,
+              "num_envs must be >= 1 and divide rollout_steps")
+        check(self.env_workers == -1 or 0 <= self.env_workers <= self.num_envs,
+              "env_workers must be -1 (auto) or in [0, num_envs]")
         check(len(self.opponents) >= 1 and set(self.opponents) <= set(OPPONENT_NAMES),
               f"opponents must be a non-empty subset of {OPPONENT_NAMES}")
         check(self.game_max_plies is None or self.game_max_plies >= 1, "game_max_plies must be >= 1")
@@ -210,5 +222,9 @@ SMOKE_OVERRIDES: dict[str, Any] = {
     "eval_interval": 1,
     "eval_games": 2,
     "checkpoint_interval": 1,
+    # Two games in two worker processes: exercises the parallel path while
+    # each game still gets 32 decisions per rollout, enough to finish games.
+    "num_envs": 2,
+    "env_workers": 2,
 }
 """Small, fast settings used by ``train_ppo.py --smoke-test``."""
